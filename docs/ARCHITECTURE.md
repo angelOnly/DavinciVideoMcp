@@ -1,6 +1,6 @@
 ---
 status: approved-baseline
-version: 1.4
+version: 1.6
 updated: 2026-08-01
 scope: architecture
 ---
@@ -20,9 +20,9 @@ scope: architecture
 
 首期架构基线：
 
-> **采用模块化单体，统一运行在一个 Python 3.10.20 Conda 环境中。API、Worker 和 `davinci-engine-mcp` 共用代码库与依赖，并作为独立本地进程运行；Worker 通过 stdio 调用 Engine MCP。任务先持久化再由 Worker 领取，同一 Resolve 实例只允许一个活动写入者。首期不引入微服务、外部消息队列或通用工作流平台，但必须具备有限任务状态、租约与心跳、幂等、超时、安全重试、恢复、读回和对账。**
+> **采用模块化单体，并固定复用现有 Conda 环境 `unofficial-davinci-mcp-win`（Python 3.10.20）。API、Worker 和 `davinci-engine-mcp` 共用代码库、依赖和同一个 Python 解释器，但作为独立本地进程运行；Worker 通过 stdio 调用 Engine MCP。任务先持久化再由 Worker 领取，同一 Resolve 实例只允许一个活动写入者。首期不引入微服务、外部消息队列或通用工作流平台，但必须具备有限任务状态、租约与心跳、幂等、超时、安全重试、恢复、读回和对账。未经产品负责人明确同意，不得创建新的 Conda 环境、`.venv` 或其他 Python 虚拟环境。**
 
-只有出现真实且无法解决的依赖冲突时，才允许拆分 Python 环境。
+只有出现已复现且无法解决的依赖冲突，并先说明单环境方案的代价与拆分方案的复杂度后，才允许申请拆分 Python 环境。
 
 ## 2. 核心不变量
 
@@ -44,7 +44,6 @@ scope: architecture
 - 未认证创意能力不能进入自动执行计划；
 - 多模态模型的能力以实际探测结果为准，不能只根据模型列表或名称推断；
 - 模型输出必须通过代码 Schema 和业务规则校验；
-- `docs/ROADMAP.md` 不属于当前开发范围，不能反向扩大当前架构。
 
 ## 3. 运行拓扑
 
@@ -76,7 +75,7 @@ scope: architecture
                                                      DaVinci Resolve Studio
 ```
 
-API、Worker 和 Engine MCP 使用同一个 Conda 环境与同一仓库，但保持独立进程：
+API、Worker 和 Engine MCP 使用现有 Conda 环境 `unofficial-davinci-mcp-win` 与同一仓库，但保持独立进程：
 
 - API 进程负责快速请求，不加载 Resolve 原生模块；
 - Worker 执行长任务、持有任务租约并管理唯一 Resolve 写入租约；
@@ -88,7 +87,8 @@ API、Worker 和 Engine MCP 使用同一个 Conda 环境与同一仓库，但保
 
 首期使用：
 
-- Python：Conda 环境中的 Python 3.10.20；
+- Python 环境：现有 Conda 环境 `unofficial-davinci-mcp-win`；
+- Python 版本：3.10.20；
 - Web API：FastAPI 或等价轻量框架；
 - 前端：TypeScript + React；
 - 业务数据库：本机 SQLite WAL；
@@ -98,13 +98,33 @@ API、Worker 和 Engine MCP 使用同一个 Conda 环境与同一仓库，但保
 - 进度：HTTP 查询 + SSE；
 - 后台任务：数据库驱动的持久任务和 Step Journal，不引入外部消息队列；
 - Codex：Codex App Server；
-- Resolve 引擎：同一 Conda 环境中的独立 `davinci-engine-mcp` stdio 进程；
+- Resolve 引擎：同一现有 Conda 环境中的独立 `davinci-engine-mcp` stdio 进程；
 - 视频工具：FFmpeg/ffprobe、PySceneDetect 或等价实现；
 - 中文转写：本地 FunASR 模型；
 - 多模态理解：`OpenAICompatibleMultimodalAdapter`，当前配置模型 ID 为 `gemini-3.5-flash`；
 - DaVinci：Resolve Studio 21 的本机实测行为作为执行真相。
 
-如果 FunASR/PyTorch 与 Resolve 原生依赖出现经过复现的不可解决冲突，再将某个 Adapter 移到独立环境或子进程；不得在问题出现前预先拆分。
+如果 FunASR/PyTorch 与 Resolve 原生依赖出现经过复现的不可解决冲突，先记录冲突和可选取舍并向产品负责人确认；获准后才可将某个 Adapter 移到独立环境或子进程，不得预先拆分。
+
+
+### 4.1 Conda 环境合同
+
+首期运行环境是已经存在的 Conda 环境，不是由项目脚本新建：
+
+```text
+环境管理器：Conda / Anaconda
+环境名：unofficial-davinci-mcp-win
+Python：3.10.20
+```
+
+开发和启动必须满足：
+
+- 依赖安装在该环境中，使用 `python -m pip ...` 或经过确认的 Conda 安装命令；
+- API、Worker 和 Engine MCP 的 `sys.executable` 必须相同；
+- 启动器使用 `conda run -n unofficial-davinci-mcp-win ...`，或要求先显式 `conda activate unofficial-davinci-mcp-win`；
+- 启动时校验 `CONDA_DEFAULT_ENV`、`sys.version_info` 和 `sys.executable`；不匹配时停止并给出修复提示；
+- 禁止项目脚本自动运行 `conda create`、`python -m venv`、`uv venv`、Poetry 自动建环境或创建 `.venv`；
+- 变更依赖前先导出当前包清单，便于回退，但不得因此自动克隆或创建第二个环境。
 
 ## 5. 模块化单体
 

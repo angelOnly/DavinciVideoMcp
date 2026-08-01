@@ -1,6 +1,6 @@
 ---
 status: approved-baseline
-version: 1.4
+version: 1.6
 updated: 2026-08-01
 scope: implementation-plan
 ---
@@ -11,12 +11,12 @@ scope: implementation-plan
 
 - 每个切片必须产生可观察结果；
 - 先完成一条真实闭环，再扩大能力；
-- 只实现本文切片，`ROADMAP.md` 不属于本次验收；
+- 只实现本文明确列出的切片，未列出的能力不属于本次验收；
 - 不一次实现完整素材市场、插件系统和所有视频类型；
 - 精确 Schema 只为当前切片建立；
 - 每个新增抽象必须由至少两个真实用例证明；
 - Resolve 写入安全、上传门禁和素材证据真实性优先于 UI 完整度；
-- 首期统一使用 Python 3.10.20 Conda 环境，不提前拆分环境。
+- 首期固定复用现有 Conda 环境 `unofficial-davinci-mcp-win`（Python 3.10.20），不创建新环境，不提前拆分环境。
 
 ## 2. 切片 0：工程骨架与架构约束
 
@@ -24,7 +24,8 @@ scope: implementation-plan
 
 - 根目录和模块结构；
 - README 文档入口和架构 import 规则；
-- Python 3.10.20 Conda 环境锁定与启动脚本；
+- 复用并校验现有 Conda 环境 `unofficial-davinci-mcp-win`（Python 3.10.20）；
+- 启动脚本通过 `conda run -n unofficial-davinci-mcp-win` 使用现有环境，禁止自动创建 `.venv` 或新 Conda 环境；
 - API、Worker、`davinci-engine-mcp` 独立进程入口；
 - Worker 通过 stdio 启动 Engine MCP；
 - 工程根目录内的 `workspace/data/product.db`、`workspace/data/creative_catalog.db`、`workspace/projects/` 和 `workspace/creative-cache/`；
@@ -34,6 +35,8 @@ scope: implementation-plan
 
 退出标准：
 
+- 不创建任何新 Python 环境；
+- 启动检查确认 `CONDA_DEFAULT_ENV=unofficial-davinci-mcp-win`，且 API、Worker 和 Engine MCP 使用同一个 `sys.executable`；
 - 一个启动命令能够启动 API、Worker 和 Engine MCP；
 - API 与 Worker 能同时运行；
 - 核心模块不依赖外部 SDK；
@@ -72,12 +75,15 @@ scope: implementation-plan
 
 实现：
 
-- Windows Resolve Bootstrap；
+- 按 `DAVINCI_ENGINE_MCP.md` 第 2 节，将两个参考仓库克隆到 `workspace/upstream-reference/` 并记录 commit SHA；
+- 参考 Tooflex 的 `resolve_env.py`、`run_server.ps1` 和 `resolve_api.py`，实现适配现有 Conda 环境的 Windows Resolve Bootstrap 与细粒度内部 API；
+- 参考 Wasserman 的 `tools_live.py`，实现结构化片段范围、目标轨道、`record_frame`、写前预览和路径校验；
+- 不安装或运行两个上游 MCP，不建立转发层，不从正式代码直接导入其模块；
 - `engine_status`、`inspect_resolve`；
 - 最小 ResolveExecutionPlan；
 - validate、preview、execute；
 - 创建隔离项目/时间线；
-- 导入媒体、插入一个视频和音频；
+- 导入媒体、按源帧和目标帧插入一个视频和音频；
 - 写后读回；
 - render、inspect、verify；
 - operation id 和 Engine Journal；
@@ -85,7 +91,10 @@ scope: implementation-plan
 
 退出标准：
 
+- 两个参考仓库只存在于 `workspace/upstream-reference/`，删除该目录后产品运行不受影响；
+- 产品进程中只存在自研 `davinci-engine-mcp`，没有第二个 Resolve MCP 或第二套写入口；
 - 在 Resolve 21 实际创建时间线并渲染有声视频；
+- 片段的源范围、目标轨道和目标帧与实际读回一致；
 - 响应 `success` 与实际读回一致；
 - 重复 operation id 不重复写入；
 - 模拟超时后可以只读对账；
@@ -277,6 +286,6 @@ scope: implementation-plan
 - 多模态证据是否覆盖非口播内容；
 - Skills 是否出现内容重叠或职责缺口；
 - SQLite、FTS、可选向量索引、Nextcloud 和本地缓存是否足够；
-- 一个 Python 3.10.20 环境是否存在真实依赖冲突。
+- 现有 Conda 环境 `unofficial-davinci-mcp-win` 是否存在真实且可复现的依赖冲突。
 
 只有真实重复问题出现后，才增加新的服务、状态、对象、向量后端或 Skill。

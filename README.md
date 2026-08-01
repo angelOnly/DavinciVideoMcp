@@ -9,10 +9,9 @@
 2. `docs/ARCHITECTURE.md`：模块、进程、数据、任务和扩展边界；
 3. `docs/CREATIVE_LIBRARY.md`：Nextcloud 创意素材库、目录、检索与本地缓存；
 4. `docs/MEDIA_INTELLIGENCE.md`：上传校验、FunASR、多模态证据和素材理解实现；
-5. `docs/DAVINCI_ENGINE_MCP.md`：自研 Resolve 执行 MCP；
+5. `docs/DAVINCI_ENGINE_MCP.md`：自研 Resolve 执行 MCP、参考仓库、能力迁移与验收合同；
 6. `.agents/skills/*/SKILL.md`：各专业任务的判断方法与交接；
 7. `docs/IMPLEMENTATION_PLAN.md`：本次开发的纵向切片；
-8. `docs/ROADMAP.md`：明确不属于本次开发范围的后续方向。
 
 ## 权威范围
 
@@ -21,7 +20,7 @@
 - 系统实现边界以 `docs/ARCHITECTURE.md` 为准；
 - 创意素材管理与检索以 `docs/CREATIVE_LIBRARY.md` 为准；
 - 媒体分析与素材理解输入以 `docs/MEDIA_INTELLIGENCE.md` 为准；
-- Resolve 执行合同以 `docs/DAVINCI_ENGINE_MCP.md` 为准；
+- Resolve 执行合同、外部实现参考和能力迁移边界以 `docs/DAVINCI_ENGINE_MCP.md` 为准；
 - 专业判断方法以对应 `SKILL.md` 为准；
 - 精确字段、枚举和接口参数以代码 Schema 与自动生成接口文档为准。
 
@@ -33,3 +32,29 @@
 - `models/manifest.example.yaml`：FunASR 本地模型配置示例；
 
 真实密钥、模型权重、数据库、工作区和本地缓存不得提交 Git。
+
+
+## 固定运行环境
+
+本项目首期**复用现有 Conda 环境**，不得自动创建新的 Python 环境：
+
+```text
+Conda 环境名：unofficial-davinci-mcp-win
+Python 版本：3.10.20
+```
+
+开发、安装依赖和启动前使用：
+
+```powershell
+conda activate unofficial-davinci-mcp-win
+python --version
+where python
+```
+
+API、Worker 和 `davinci-engine-mcp` 必须使用同一个解释器。未经产品负责人明确同意，不得执行 `conda create`、`python -m venv`、`uv venv`、Poetry 自动建环境或创建 `.venv`。统一启动器应优先使用：
+
+```powershell
+conda run --no-capture-output -n unofficial-davinci-mcp-win python -m davinci_app
+```
+
+启动时必须校验 `CONDA_DEFAULT_ENV`、Python 版本和 `sys.executable`；不符合时直接停止并提示激活现有环境，不能自行创建替代环境。

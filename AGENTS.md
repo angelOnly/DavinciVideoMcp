@@ -18,7 +18,7 @@
 ## 项目执行规则
 
 1. 先读 `README.md`，再按其权威范围读取需要的文档。
-2. 只实现 `docs/IMPLEMENTATION_PLAN.md` 明确列入本次开发的能力；`docs/ROADMAP.md` 不属于当前验收范围，也不得为其预建通用平台。
+2. 只实现 `docs/IMPLEMENTATION_PLAN.md` 明确列入本次开发的能力；未在当前需求和实施计划中明确列出的能力，不得提前实现或预建通用平台。
 3. 产品文档只写用户、流程、范围和验收；架构文档写模块、数据与运行边界；专业方法只写在 Skills 中，不得混写。
 4. 不在 Markdown 中提前穷举数据库字段；精确合同以代码 Schema 为准。
 5. Skills 不互相调用，不写业务状态，不部署素材，不调用 `davinci-engine-mcp`。
@@ -32,6 +32,7 @@
 13. 每种新创意能力必须通过“发现、部署、执行、读回、渲染”实机合同测试后才能声明支持。
 14. 素材检索先执行结构化硬过滤，再做全文与语义召回；只向专业 Skill 返回少量真实候选和预览，不把整个素材库交给模型。
 15. 多模态模型通过 provider-neutral Port 接入；当前模型 ID 由配置提供，启动时必须实测图片、音频、视频和结构化输出能力。
-16. API、Worker 和 `davinci-engine-mcp` 首期统一使用 Python 3.10.20 Conda 环境，但保持独立本地进程；只有出现真实依赖冲突后才拆环境。
+16. API、Worker 和 `davinci-engine-mcp` 必须复用现有 Conda 环境 `unofficial-davinci-mcp-win`（Python 3.10.20），并使用同一个 `sys.executable`；未经产品负责人明确同意，禁止创建新的 Conda 环境、`.venv`、`venv`，也禁止 Poetry 或 uv 自动创建隔离环境。只有出现已复现且无法解决的依赖冲突，并说明取舍后，才允许申请拆分环境。
 17. API Key、Token、密码和其他敏感凭据不得写入文档、代码、日志、截图或 Git，只从本机安全配置读取。
 18. 不得把模型自评、工具 `success` 或时间线截图当作用户可见视频已经正确的证据。
+19. 外部 MCP 参考仓库只允许克隆到 `workspace/upstream-reference/` 供阅读和对照测试；不得把两个上游 MCP 作为产品运行依赖、不得同时向 Codex 暴露，也不得直接转发其全部工具。需要的行为必须按 `docs/DAVINCI_ENGINE_MCP.md` 迁入自研合同和模块。

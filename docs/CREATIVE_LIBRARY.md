@@ -1,6 +1,6 @@
 ---
 status: approved-baseline
-version: 1.4
+version: 1.6
 updated: 2026-08-01
 scope: creative-library
 ---
