@@ -58,3 +58,13 @@ conda run --no-capture-output -n unofficial-davinci-mcp-win python -m davinci_ap
 ```
 
 启动时必须校验 `CONDA_DEFAULT_ENV`、Python 版本和 `sys.executable`；不符合时直接停止并提示激活现有环境，不能自行创建替代环境。
+
+## 本机启动
+
+在仓库根目录执行：
+
+```powershell
+.\scripts\start.ps1
+```
+
+该脚本只复用 `unofficial-davinci-mcp-win`，启动 API 与持久 Worker；Engine MCP 仅由 Worker 按需以 stdio 子进程启动。
