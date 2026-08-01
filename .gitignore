@@ -5,6 +5,7 @@ __pycache__/
 .pytest_cache/
 *.pyc
 workspace/
+/videos/
 *.db
 *.db-wal
 *.db-shm
