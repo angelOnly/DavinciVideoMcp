@@ -1,0 +1,7 @@
+funasr:
+  root: ./models
+  asr_model: iic/SenseVoiceSmall
+  vad_model: iic/speech_fsmn_vad_zh-cn-16k-common-pytorch
+  punc_model: iic/punc_ct-transformer_cn-en-common-vocab471067-large
+  speaker_model: null
+  auto_download: false

@@ -1,0 +1,10 @@
+.env
+*.key
+*.pem
+__pycache__/
+.pytest_cache/
+*.pyc
+workspace/
+*.db
+*.db-wal
+*.db-shm
