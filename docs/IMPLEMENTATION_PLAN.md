@@ -1,11 +1,52 @@
 ---
 status: approved-baseline
-version: 1.6
-updated: 2026-08-01
+version: 1.7
+updated: 2026-08-02
 scope: implementation-plan
 ---
 
 # 本次开发实施计划
+
+## 0. 真实完成状态与产物边界（1.7）
+
+### 0.1 已完成：Engine 技术闭环，不等于正式候选闭环
+
+现有三条 `videos/` 测试素材已经验证了“服务端校验 → 工作副本 → 受管 Resolve 时间线写入 → 写后读回 → 渲染 → 文件级技术验证”。它们仅是 **内部技术预览**，不得再描述为成片候选。
+
+当前实现把视频产物严格分为：
+
+- `technical_preview`：仅由 `engine_smoke` 任务生成，用于 Engine 冒烟测试；
+- `work_preview`：正式专业链路产生并通过技术验证的内部工作版；
+- `candidate_render` 与 `VideoVersion(state='candidate')`：完成收尾和候选验证后，才可由发布门禁创建的用户可见候选。
+
+历史上使用 `testing_preset` 产生并误标为候选的记录会被非破坏性迁移为内部技术预览：保留原文件、运行与审计引用，不再显示在候选列表，也不再让项目处于 `ready_for_review`。
+
+### 0.2 本次已接通的安全链路
+
+正式 `build_candidate` 任务按以下顺序运行：
+
+```text
+确定性媒体证据
+  → 完整媒体证据（直接音视频或首版受限降级）
+  → 素材理解
+  → 导演方向、声音/视觉/文字建议
+  → EditPlan
+  → CapabilityBinding
+  → 内部工作版与复核
+  → 收尾方案
+  → 候选渲染与候选验证
+  → VideoVersion 发布
+```
+
+当前机器已实测本地 FunASR、受限 Codex 专业 Skill 运行时，以及 OpenAI-compatible Gemini 代理的文本、图片和结构化 JSON。当前实测模型为 `gemini-3-flash`；该代理拒绝标准 OpenAI 的 WAV 与 MP4 载荷，因此 Gemini 的直接音视频能力保持 `available=false`。这不会阻断首版：系统进入 `codex_frame_transcript_mode`，使用 FunASR 带时间码转写、本地静音/响度/镜头候选、每段素材最多 12 张概览抽帧，以及由 SourceUnderstanding 明确请求的 0.25 秒密集窗口（均匀选取最多 12 张交给 Codex）进行图片分析。工作版和候选复核同样使用最多 12 张代表抽帧加 FunASR；其结果必须披露不能证明未抽帧画面、帧间连续动作、非语言声音或完整声画关系。只有 FunASR、Codex 受控运行时、专业 Skill 或认证能力等实际前置条件缺失时，任务才进入 `waiting_user`；不能只因 Gemini 直连音视频未通过而停住。
+
+### 0.3 候选发布硬门禁
+
+发布候选时不再仅检查 MP4 文件。系统必须同时验证素材理解、导演方向、声音/视觉/文字建议、EditPlan、CapabilityBinding、工作版复核、收尾方案、候选验证，以及工作版、收尾、候选渲染和验证之间的摘要与内容哈希基线。任何技术预览、缺失产物、未验证渲染或基线不一致都会被拒绝。
+
+### 0.4 创意能力的当前状态
+
+认证创意能力目前为 `0`。只有通过“发现、部署、执行、读回、渲染”实机合同的资源才能进入 `CapabilityBinding`。没有认证 Mapping 的音乐、字体、模板、动效、调色或收尾调整会被显式拒绝，不能静默忽略或声称可用。
 
 ## 1. 实施原则
 
@@ -52,7 +93,7 @@ scope: implementation-plan
 - FFmpeg/ffprobe 健康检查；
 - FunASR 本地模型目录、加载和标准音频健康检查；
 - OpenAI-compatible 多模态端点检查；
-- 使用配置模型 `gemini-3.5-flash` 实测文本、图片、WAV、带声音 MP4 和结构化输出；
+- 使用配置模型 `gemini-3-flash` 实测文本、图片、WAV、带声音 MP4 和结构化输出；
 - Codex App Server 与 Engine MCP 启动检查；
 - Resolve、Nextcloud 根目录和本地缓存可用性检查；
 - Web 上传 staging；

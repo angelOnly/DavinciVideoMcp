@@ -9,7 +9,7 @@
 
 ## 多模态反代
 
-- 当前通过 OpenAI-compatible 接口调用，配置模型 ID 为 `gemini-3.5-flash`；该 ID 是当前反代可用路由名，不要求与上游官方 ID 相同。
+- 当前通过 OpenAI-compatible 接口调用，配置模型 ID 为 `gemini-3-flash`；该 ID 是当前反代可用路由名，不要求与上游官方 ID 相同。
 - 业务能力以本机启动健康检查为准：必须分别实测文本、图片、音频、带声音视频和结构化输出。
 - Base URL、API Key 和模型名只从本机配置读取，不进入文档、日志或 Git。
 - OpenAI Python SDK/API 形式参考：  

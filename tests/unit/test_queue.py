@@ -18,7 +18,10 @@ class TaskQueueTests(unittest.TestCase):
         now = utc_now()
         with self.database.transaction(immediate=True) as connection:
             connection.execute(
-                "INSERT INTO projects VALUES (?, ?, ?, ?, ?, ?)",
+                """
+                INSERT INTO projects(id, title, brief_json, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
                 ("project", "测试", "{}", "draft", now, now),
             )
             connection.execute(
@@ -56,4 +59,3 @@ class TaskQueueTests(unittest.TestCase):
             queue.acquire_resolve_writer("worker-b")
         queue.release_resolve_writer("worker-a")
         queue.acquire_resolve_writer("worker-b")
-

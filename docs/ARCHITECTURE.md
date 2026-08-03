@@ -101,7 +101,7 @@ API、Worker 和 Engine MCP 使用现有 Conda 环境 `unofficial-davinci-mcp-wi
 - Resolve 引擎：同一现有 Conda 环境中的独立 `davinci-engine-mcp` stdio 进程；
 - 视频工具：FFmpeg/ffprobe、PySceneDetect 或等价实现；
 - 中文转写：本地 FunASR 模型；
-- 多模态理解：`OpenAICompatibleMultimodalAdapter`，当前配置模型 ID 为 `gemini-3.5-flash`；
+- 多模态理解：`OpenAICompatibleMultimodalAdapter`，当前配置模型 ID 为 `gemini-3-flash`；
 - DaVinci：Resolve Studio 21 的本机实测行为作为执行真相。
 
 如果 FunASR/PyTorch 与 Resolve 原生依赖出现经过复现的不可解决冲突，先记录冲突和可选取舍并向产品负责人确认；获准后才可将某个 Adapter 移到独立环境或子进程，不得预先拆分。
@@ -317,7 +317,7 @@ Codex 和 Skills 不直接连接它。完整设计见 `DAVINCI_ENGINE_MCP.md`。
 - FFmpeg/ffprobe 可执行；
 - FunASR 配置的本地模型存在、能够加载并处理标准音频；
 - OpenAI-compatible 多模态端点可访问；
-- 配置模型 `gemini-3.5-flash` 能完成文本、图片、音频、视频和结构化结果测试中的哪些项；
+- 配置模型 `gemini-3-flash` 能完成文本、图片、音频、视频和结构化结果测试中的哪些项；
 - Codex App Server 可启动；
 - `davinci-engine-mcp` 可启动；
 - Resolve 是否连接，以及当前哪些执行能力可用。
@@ -418,7 +418,7 @@ Validated Asset
   → FunASR 转写/VAD/说话人
   → 镜头检测与分层抽帧
   → davinci-engine-mcp 节拍/响度/静音分析
-  → OpenAI-compatible 多模态分析（当前模型 gemini-3.5-flash）
+  → OpenAI-compatible 多模态分析（当前模型 gemini-3-flash）
   → Evidence Fusion
   → video-source-understanding
   → SourceUnderstanding

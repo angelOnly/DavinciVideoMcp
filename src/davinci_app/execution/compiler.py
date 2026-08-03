@@ -1,4 +1,4 @@
-"""将本次测试素材的明确预设编译为确定性 ResolveExecutionPlan。"""
+"""将明确的 Engine 冒烟预设编译为确定性 ResolveExecutionPlan。"""
 
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ class CompilationError(ValueError):
     pass
 
 
-class TestCutCompiler:
-    """首批测试素材的保守编译器，不声称替代专业 EditPlan。"""
+class EngineSmokeCompiler:
+    """仅用于 Engine 冒烟测试的保守编译器，绝不替代专业 EditPlan。"""
 
     def __init__(self, resolve_workspace_project: str = "DavinciMcp_Workspace") -> None:
         if not resolve_workspace_project.startswith("DavinciMcp_"):
@@ -23,6 +23,8 @@ class TestCutCompiler:
         self.resolve_workspace_project = resolve_workspace_project
 
     def compile(self, run: dict[str, Any], project_paths: dict[str, Path]) -> dict[str, Any]:
+        if run.get("kind") != "engine_smoke":
+            raise CompilationError("EngineSmokeCompiler 只能处理 engine_smoke 运行，不能用于正式剪辑。")
         snapshot = run["input_snapshot"]
         brief = snapshot.get("brief") or {}
         preset = brief.get("testing_preset")
@@ -54,12 +56,13 @@ class TestCutCompiler:
             "run_id": run["id"],
             # 每次运行仍使用独立时间线；共享的受管 Resolve 项目永不指向用户项目。
             "project_name": self.resolve_workspace_project,
-            "timeline_name": f"run_{run['id'][:16]}",
+            "timeline_name": f"run_{run['id'][:16]}_smoke",
             "timeline_fps": fps,
             "width": width,
             "height": height,
             "clips": clips,
-            "render_path": str(project_paths["renders"] / run["id"] / "working.mp4"),
+            # 技术预览与正式工作版使用不同文件名，避免被误当成候选基线。
+            "render_path": str(project_paths["renders"] / run["id"] / "technical-preview.mp4"),
         }
         plan_path = project_paths["plans"] / f"{run['id']}.resolve-plan.json"
         plan_path.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -75,7 +78,7 @@ class TestCutCompiler:
         source_out = min(duration - 0.15, source_in + maximum)
         if source_out <= source_in:
             source_in, source_out = 0.0, duration
-        return TestCutCompiler._placement(asset, source_in, source_out, record_frame)
+        return EngineSmokeCompiler._placement(asset, source_in, source_out, record_frame)
 
     @staticmethod
     def _interview_clip(asset: dict[str, Any], record_frame: int, maximum: float) -> dict[str, Any]:
@@ -86,7 +89,7 @@ class TestCutCompiler:
         # 没有转写与审批简报时，不伪造语义精选；只生成可验证的开场节选。
         source_in = 0.0
         source_out = min(duration, max(1.0, maximum))
-        return TestCutCompiler._placement(asset, source_in, source_out, record_frame)
+        return EngineSmokeCompiler._placement(asset, source_in, source_out, record_frame)
 
     @staticmethod
     def _placement(asset: dict[str, Any], source_in: float, source_out: float, record_frame: int) -> dict[str, Any]:

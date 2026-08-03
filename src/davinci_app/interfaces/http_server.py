@@ -63,6 +63,10 @@ def _handler_factory(container: ApplicationContainer) -> type[BaseHTTPRequestHan
                 match = re.fullmatch(r"/api/versions/([a-f0-9]+)/media", parsed.path)
                 if match:
                     return self._video(container.projects.get_video_version(match.group(1)))
+                match = re.fullmatch(r"/api/artifacts/([A-Za-z0-9_-]+)/media", parsed.path)
+                if match:
+                    # 开发工作台可播放内部产物，但它们不通过 VideoVersion 接口暴露为候选。
+                    return self._video(container.projects.get_video_artifact(match.group(1)))
                 return self._static(parsed.path)
             except ProjectStateError as exc:
                 self._json(HTTPStatus.NOT_FOUND, {"error": {"code": "not_found", "message": str(exc)}})
@@ -96,7 +100,10 @@ def _handler_factory(container: ApplicationContainer) -> type[BaseHTTPRequestHan
                     asset_ids = payload.get("asset_ids")
                     if asset_ids is not None and not isinstance(asset_ids, list):
                         raise ValueError("asset_ids 必须是数组。")
-                    run = container.projects.freeze_run(match.group(1), asset_ids=asset_ids)
+                    kind = payload.get("kind", "initial_edit")
+                    if kind not in {"initial_edit", "engine_smoke"}:
+                        raise ValueError("kind 只能是 initial_edit 或 engine_smoke。")
+                    run = container.projects.freeze_run(match.group(1), asset_ids=asset_ids, kind=kind)
                     return self._json(HTTPStatus.CREATED, run)
                 match = re.fullmatch(r"/api/assets/([a-f0-9]+)/remove", parsed.path)
                 if match:
@@ -197,4 +204,3 @@ def _range(header: str | None, size: int) -> tuple[int, int]:
     if start < 0 or end < start or start >= size:
         raise ValueError("Range 超出视频文件范围。")
     return start, min(end, size - 1)
-

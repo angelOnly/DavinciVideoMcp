@@ -18,7 +18,7 @@ def main() -> int:
     subcommands.add_parser("health", help="输出本机能力健康状态")
     worker = subcommands.add_parser("worker", help="运行持久任务 Worker")
     worker.add_argument("--once", action="store_true", help="只领取并执行一个任务")
-    demo = subcommands.add_parser("demo", help="导入 videos 下三组测试素材并创建任务")
+    demo = subcommands.add_parser("demo", help="导入 videos 下三组测试素材并创建 Engine 冒烟任务")
     demo.add_argument("--videos-root", type=Path, default=Path("videos"))
     demo.add_argument("--execute", action="store_true", help="创建后立即由当前 Worker 执行")
     api = subcommands.add_parser("api", help="启动本机 HTTP API 和测试 Web 页面")
@@ -58,4 +58,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

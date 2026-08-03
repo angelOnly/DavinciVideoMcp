@@ -12,6 +12,10 @@ from davinci_app.common import ensure_within, json_loads_or_default, safe_filena
 from davinci_app.config import AppConfig
 from davinci_app.media.validation import UploadValidator
 from davinci_app.persistence import ProductDatabase
+from davinci_app.project.candidate_gate import CandidatePublishGateError, verify_candidate_publishable
+
+
+VIDEO_ARTIFACT_TYPES = {"technical_preview", "work_preview", "candidate_render"}
 
 
 class ProjectStateError(RuntimeError):
@@ -154,7 +158,14 @@ class ProjectService:
     def freeze_run(
         self, project_id: str, *, asset_ids: Iterable[str] | None = None, kind: str = "initial_edit"
     ) -> dict[str, Any]:
+        if kind not in {"initial_edit", "engine_smoke"}:
+            raise ProjectStateError("本次只支持 initial_edit 或 engine_smoke 运行类型。")
         project = self._require_project(project_id)
+        testing_preset = (project.get("brief") or {}).get("testing_preset")
+        if kind == "engine_smoke" and not testing_preset:
+            raise ProjectStateError("Engine 冒烟测试必须使用明确的 testing_preset。")
+        if kind == "initial_edit" and testing_preset:
+            raise ProjectStateError("带 testing_preset 的项目只能运行 Engine 冒烟测试，不能进入正式候选链路。")
         all_assets = self.list_assets(project_id)
         selected = all_assets if asset_ids is None else self._select_assets(all_assets, asset_ids)
         if not selected:
@@ -176,6 +187,7 @@ class ProjectService:
 
         run_id = uuid.uuid4().hex
         task_id = uuid.uuid4().hex
+        task_type = "engine_smoke" if kind == "engine_smoke" else "build_candidate"
         now = utc_now()
         snapshot = {
             "project_id": project_id,
@@ -193,9 +205,9 @@ class ProjectService:
             connection.execute(
                 """
                 INSERT INTO tasks(id, run_id, task_type, payload_json, status, created_at, updated_at)
-                VALUES (?, ?, 'build_candidate', ?, 'queued', ?, ?)
+                VALUES (?, ?, ?, ?, 'queued', ?, ?)
                 """,
-                (task_id, run_id, json.dumps({"run_id": run_id}, ensure_ascii=False), now, now),
+                (task_id, run_id, task_type, json.dumps({"run_id": run_id}, ensure_ascii=False), now, now),
             )
             connection.execute(
                 "UPDATE projects SET status = 'running', updated_at = ? WHERE id = ?",
@@ -203,18 +215,36 @@ class ProjectService:
             )
         return self.get_run(run_id)
 
-    def publish_video_version(self, run_id: str, render_path: Path, plan_digest: str) -> dict[str, Any]:
-        """发布操作只复制新文件，绝不覆盖已经可见的候选版本。"""
+    def publish_video_version(self, run_id: str, candidate_render_id: str) -> dict[str, Any]:
+        """只有完整专业证据链通过后，才把候选渲染升级为用户可见版本。"""
         run = self.get_run(run_id)
+        if run["kind"] != "initial_edit":
+            raise ProjectStateError("Engine 冒烟测试和内部技术预览绝不能发布为成片候选。")
         project_id = run["project_id"]
         project_directories = self._project_directories(project_id)
-        render_path = ensure_within(render_path, project_directories["root"])
+        artifacts = self.list_video_artifacts(project_id, run_id=run_id)
+        try:
+            proof = verify_candidate_publishable(self.list_run_artifacts(run_id), artifacts, candidate_render_id)
+        except CandidatePublishGateError as exc:
+            raise ProjectStateError(f"候选发布被门禁阻止：{exc}") from exc
+        candidate_render = next(item for item in artifacts if item["id"] == candidate_render_id)
+        work_preview = next(item for item in artifacts if item["artifact_type"] == "work_preview")
+        work_path = ensure_within(Path(work_preview["output_path"]), project_directories["root"])
+        if (
+            not work_path.exists()
+            or work_path.stat().st_size == 0
+            or sha256_file(work_path) != work_preview["output_hash"]
+        ):
+            raise ProjectStateError("内部工作版在复核后发生变化或丢失，不能发布候选。")
+        render_path = ensure_within(Path(candidate_render["output_path"]), project_directories["root"])
         if not render_path.exists() or render_path.stat().st_size == 0:
-            raise ProjectStateError("渲染文件不存在或为空，不能发布版本。")
+            raise ProjectStateError("候选渲染文件不存在或为空，不能发布版本。")
+        if sha256_file(render_path) != candidate_render["output_hash"]:
+            raise ProjectStateError("候选渲染在验证后发生变化，不能发布版本。")
         with self.database.transaction(immediate=True) as connection:
             next_number = int(
                 connection.execute(
-                    "SELECT COALESCE(MAX(version_number), 0) + 1 FROM video_versions WHERE project_id = ?",
+                    "SELECT COALESCE(MAX(version_number), 0) + 1 FROM video_versions WHERE project_id = ? AND state = 'candidate'",
                     (project_id,),
                 ).fetchone()[0]
             )
@@ -225,6 +255,9 @@ class ProjectService:
             temporary_path = candidate_path.with_suffix(".mp4.partial")
             shutil.copy2(render_path, temporary_path)
             temporary_path.replace(candidate_path)
+            if sha256_file(candidate_path) != candidate_render["output_hash"]:
+                candidate_path.unlink(missing_ok=True)
+                raise ProjectStateError("候选文件复制后的内容哈希不一致，已拒绝发布。")
             now = utc_now()
             connection.execute(
                 """
@@ -239,7 +272,7 @@ class ProjectService:
                     next_number,
                     str(candidate_path),
                     sha256_file(candidate_path),
-                    plan_digest,
+                    proof.plan_digest,
                     now,
                 ),
             )
@@ -262,6 +295,7 @@ class ProjectService:
         result["brief"] = json_loads_or_default(result.pop("brief_json"), {})
         result["assets"] = self.list_assets(project_id)
         result["versions"] = self.list_video_versions(project_id)
+        result["artifacts"] = self.list_video_artifacts(project_id)
         return result
 
     def project_paths(self, project_id: str) -> dict[str, Path]:
@@ -269,11 +303,68 @@ class ProjectService:
         self._require_project(project_id)
         return self._project_directories(project_id)
 
+    def get_codex_thread_id(self, project_id: str) -> str | None:
+        """Codex Thread 只是一项项目引用，绝不替代项目、运行或版本业务状态。"""
+        with self.database.connection() as connection:
+            row = connection.execute("SELECT codex_thread_id FROM projects WHERE id = ?", (project_id,)).fetchone()
+        if row is None:
+            raise ProjectStateError("项目不存在。")
+        return str(row["codex_thread_id"]) if row["codex_thread_id"] else None
+
+    def record_codex_thread_id(self, project_id: str, proposed_thread_id: str) -> str:
+        """并发情况下保留第一个成功写入的 Thread，调用方应恢复其返回值。"""
+        if not proposed_thread_id:
+            raise ProjectStateError("Codex Thread ID 不能为空。")
+        with self.database.transaction(immediate=True) as connection:
+            row = connection.execute("SELECT codex_thread_id FROM projects WHERE id = ?", (project_id,)).fetchone()
+            if row is None:
+                raise ProjectStateError("项目不存在。")
+            existing = row["codex_thread_id"]
+            if existing:
+                return str(existing)
+            connection.execute(
+                "UPDATE projects SET codex_thread_id = ?, updated_at = ? WHERE id = ?",
+                (proposed_thread_id, utc_now(), project_id),
+            )
+        return proposed_thread_id
+
     def mark_run_running(self, run_id: str) -> None:
         with self.database.transaction(immediate=True) as connection:
             connection.execute(
                 "UPDATE runs SET status = 'running', updated_at = ? WHERE id = ? AND status = 'queued'",
                 (utc_now(), run_id),
+            )
+
+    def mark_run_waiting(self, run_id: str, detail: dict[str, Any]) -> None:
+        """外部专业能力缺失时保留输入与检查点，不能伪造降级候选。"""
+        run = self.get_run(run_id)
+        with self.database.transaction(immediate=True) as connection:
+            connection.execute(
+                "UPDATE runs SET status = 'waiting_user', failure_json = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(detail, ensure_ascii=False), utc_now(), run_id),
+            )
+            connection.execute(
+                "UPDATE projects SET status = 'waiting_user', updated_at = ? WHERE id = ?",
+                (utc_now(), run["project_id"]),
+            )
+
+    def mark_engine_smoke_succeeded(self, run_id: str) -> None:
+        """技术预览成功只更新内部状态，绝不创建 VideoVersion。"""
+        run = self.get_run(run_id)
+        if run["kind"] != "engine_smoke":
+            raise ProjectStateError("只有 engine_smoke 运行可以标记为技术预览完成。")
+        now = utc_now()
+        with self.database.transaction(immediate=True) as connection:
+            artifact = connection.execute(
+                "SELECT 1 FROM video_artifacts WHERE run_id = ? AND artifact_type = 'technical_preview' AND state = 'verified'",
+                (run_id,),
+            ).fetchone()
+            if artifact is None:
+                raise ProjectStateError("没有已验证的技术预览，不能完成 Engine 冒烟运行。")
+            connection.execute("UPDATE runs SET status = 'succeeded', updated_at = ? WHERE id = ?", (now, run_id))
+            connection.execute(
+                "UPDATE projects SET status = 'technical_preview_available', updated_at = ? WHERE id = ?",
+                (now, run["project_id"]),
             )
 
     def list_projects(self) -> list[dict[str, Any]]:
@@ -287,6 +378,142 @@ class ProjectService:
                 "SELECT * FROM assets WHERE project_id = ? ORDER BY created_at", (project_id,)
             ).fetchall()
         return [self._asset_row(row) for row in rows]
+
+    def record_run_artifact(
+        self,
+        run_id: str,
+        artifact_type: str,
+        payload: dict[str, Any],
+        *,
+        state: str = "succeeded",
+        artifact_path: Path | None = None,
+    ) -> dict[str, Any]:
+        """记录专业链路的小型结构化产物；媒体始终只保留受管路径。"""
+        run = self.get_run(run_id)
+        project_root = self._project_directories(run["project_id"])["root"]
+        stored_path = None
+        content_hash = None
+        if artifact_path is not None:
+            safe_path = ensure_within(artifact_path, project_root)
+            if not safe_path.exists() or not safe_path.is_file():
+                raise ProjectStateError("专业产物文件不存在，不能记录为完成。")
+            stored_path = str(safe_path)
+            content_hash = sha256_file(safe_path)
+        now = utc_now()
+        artifact_id = uuid.uuid4().hex
+        with self.database.transaction(immediate=True) as connection:
+            connection.execute(
+                """
+                INSERT INTO run_artifacts(
+                    id, run_id, artifact_type, state, payload_json, artifact_path, content_hash, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id, artifact_type) DO UPDATE SET
+                    state = excluded.state, payload_json = excluded.payload_json, artifact_path = excluded.artifact_path,
+                    content_hash = excluded.content_hash, updated_at = excluded.updated_at
+                """,
+                (
+                    artifact_id,
+                    run_id,
+                    artifact_type,
+                    state,
+                    json.dumps(payload, ensure_ascii=False),
+                    stored_path,
+                    content_hash,
+                    now,
+                    now,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM run_artifacts WHERE run_id = ? AND artifact_type = ?", (run_id, artifact_type)
+            ).fetchone()
+        assert row is not None
+        return self._run_artifact_row(row)
+
+    def list_run_artifacts(self, run_id: str) -> list[dict[str, Any]]:
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM run_artifacts WHERE run_id = ? ORDER BY created_at", (run_id,)
+            ).fetchall()
+        return [self._run_artifact_row(row) for row in rows]
+
+    def record_video_artifact(
+        self,
+        run_id: str,
+        artifact_type: str,
+        render_path: Path,
+        *,
+        plan_digest: str | None,
+        verification: dict[str, Any],
+        finishing_digest: str | None = None,
+    ) -> dict[str, Any]:
+        """记录非用户可见的受管渲染，不能借此绕过候选发布门禁。"""
+        if artifact_type not in VIDEO_ARTIFACT_TYPES:
+            raise ProjectStateError(f"不支持的视频产物类型：{artifact_type}")
+        run = self.get_run(run_id)
+        project_id = run["project_id"]
+        if run["kind"] == "engine_smoke" and artifact_type != "technical_preview":
+            raise ProjectStateError("Engine 冒烟运行只能记录 technical_preview。")
+        if run["kind"] == "initial_edit" and artifact_type == "technical_preview":
+            raise ProjectStateError("正式剪辑运行不能把渲染降格或伪装为技术预览。")
+        if artifact_type == "work_preview" and not plan_digest:
+            raise ProjectStateError("内部工作版必须绑定 EditPlan 摘要。")
+        if artifact_type == "candidate_render" and (not plan_digest or not finishing_digest):
+            raise ProjectStateError("候选渲染必须同时绑定 EditPlan 与收尾方案摘要。")
+        project_root = self._project_directories(project_id)["root"]
+        safe_path = ensure_within(render_path, project_root)
+        if not safe_path.exists() or safe_path.stat().st_size == 0:
+            raise ProjectStateError("内部渲染文件不存在或为空。")
+        state = "verified" if verification.get("valid") is True else "invalid"
+        artifact_id = uuid.uuid4().hex
+        now = utc_now()
+        with self.database.transaction(immediate=True) as connection:
+            existing = connection.execute(
+                "SELECT id FROM video_artifacts WHERE run_id = ? AND artifact_type = ?", (run_id, artifact_type)
+            ).fetchone()
+            if existing:
+                raise ProjectStateError(f"该运行已经存在 {artifact_type}，拒绝覆盖。")
+            connection.execute(
+                """
+                INSERT INTO video_artifacts(
+                    id, project_id, run_id, artifact_type, state, output_path, output_hash,
+                    plan_digest, finishing_digest, verification_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    artifact_id,
+                    project_id,
+                    run_id,
+                    artifact_type,
+                    state,
+                    str(safe_path),
+                    sha256_file(safe_path),
+                    plan_digest,
+                    finishing_digest,
+                    json.dumps(verification, ensure_ascii=False),
+                    now,
+                ),
+            )
+        return self.get_video_artifact(artifact_id)
+
+    def get_video_artifact(self, artifact_id: str) -> dict[str, Any]:
+        with self.database.connection() as connection:
+            row = connection.execute("SELECT * FROM video_artifacts WHERE id = ?", (artifact_id,)).fetchone()
+        if row is None:
+            raise ProjectStateError("内部视频产物不存在。")
+        return self._video_artifact_row(row)
+
+    def list_video_artifacts(self, project_id: str, *, run_id: str | None = None) -> list[dict[str, Any]]:
+        with self.database.connection() as connection:
+            if run_id:
+                rows = connection.execute(
+                    "SELECT * FROM video_artifacts WHERE project_id = ? AND run_id = ? ORDER BY created_at",
+                    (project_id, run_id),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT * FROM video_artifacts WHERE project_id = ? ORDER BY created_at", (project_id,)
+                ).fetchall()
+        return [self._video_artifact_row(row) for row in rows]
 
     def get_asset(self, asset_id: str) -> dict[str, Any]:
         with self.database.connection() as connection:
@@ -307,7 +534,9 @@ class ProjectService:
 
     def get_video_version(self, version_id: str) -> dict[str, Any]:
         with self.database.connection() as connection:
-            row = connection.execute("SELECT * FROM video_versions WHERE id = ?", (version_id,)).fetchone()
+            row = connection.execute(
+                "SELECT * FROM video_versions WHERE id = ? AND state = 'candidate'", (version_id,)
+            ).fetchone()
         if row is None:
             raise ProjectStateError("视频版本不存在。")
         return dict(row)
@@ -315,7 +544,8 @@ class ProjectService:
     def list_video_versions(self, project_id: str) -> list[dict[str, Any]]:
         with self.database.connection() as connection:
             rows = connection.execute(
-                "SELECT * FROM video_versions WHERE project_id = ? ORDER BY version_number", (project_id,)
+                "SELECT * FROM video_versions WHERE project_id = ? AND state = 'candidate' ORDER BY version_number",
+                (project_id,),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -396,6 +626,18 @@ class ProjectService:
         result["probe"] = json_loads_or_default(result.pop("probe_json"), {})
         result["warnings"] = json_loads_or_default(result.pop("warnings_json"), [])
         result["errors"] = json_loads_or_default(result.pop("error_json"), [])
+        return result
+
+    @staticmethod
+    def _run_artifact_row(row: Any) -> dict[str, Any]:
+        result = dict(row)
+        result["payload"] = json_loads_or_default(result.pop("payload_json"), {})
+        return result
+
+    @staticmethod
+    def _video_artifact_row(row: Any) -> dict[str, Any]:
+        result = dict(row)
+        result["verification"] = json_loads_or_default(result.pop("verification_json"), {})
         return result
 
     @staticmethod

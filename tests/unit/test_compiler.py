@@ -4,10 +4,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from davinci_app.execution.compiler import TestCutCompiler
+from davinci_app.execution.compiler import EngineSmokeCompiler
 
 
-class TestCutCompilerTests(unittest.TestCase):
+class EngineSmokeCompilerTests(unittest.TestCase):
     def test_fragment_montage_preserves_source_order_without_overlap(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -20,13 +20,14 @@ class TestCutCompilerTests(unittest.TestCase):
             ]
             run = {
                 "id": "run-123",
+                "kind": "engine_smoke",
                 "input_snapshot": {
                     "project_id": "project-123",
                     "brief": {"testing_preset": "fragment_montage", "max_clip_seconds": 6},
                     "assets": assets,
                 },
             }
-            result = TestCutCompiler().compile(run, paths)
+            result = EngineSmokeCompiler().compile(run, paths)
             clips = result["plan"]["clips"]
             self.assertEqual(["a", "b"], [clip["asset_id"] for clip in clips])
             self.assertEqual(0, clips[0]["record_frame"])
@@ -41,15 +42,34 @@ class TestCutCompilerTests(unittest.TestCase):
                 path.mkdir()
             run = {
                 "id": "run-123",
+                "kind": "engine_smoke",
                 "input_snapshot": {
                     "project_id": "project-123",
                     "brief": {"testing_preset": "interview_excerpt", "max_duration_seconds": 90},
                     "assets": [_asset("interview", 600.0, True)],
                 },
             }
-            result = TestCutCompiler().compile(run, paths)
+            result = EngineSmokeCompiler().compile(run, paths)
             clip = result["plan"]["clips"][0]
             self.assertEqual(90, clip["source_out_seconds"])
+
+    def test_rejects_formal_run_even_when_it_contains_testing_preset(self) -> None:
+        run = {
+            "id": "run-123",
+            "kind": "initial_edit",
+            "input_snapshot": {
+                "project_id": "project-123",
+                "brief": {"testing_preset": "fragment_montage"},
+                "assets": [_asset("a", 10.0, True)],
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = {name: root / name for name in ("plans", "renders")}
+            for path in paths.values():
+                path.mkdir()
+            with self.assertRaisesRegex(ValueError, "只能处理 engine_smoke"):
+                EngineSmokeCompiler().compile(run, paths)
 
 
 def _asset(identifier: str, duration: float, has_audio: bool) -> dict[str, object]:
@@ -61,4 +81,3 @@ def _asset(identifier: str, duration: float, has_audio: bool) -> dict[str, objec
         "working_path": f"C:/workspace/{identifier}.mp4",
         "probe": {"duration_seconds": duration, "audio_streams": 1 if has_audio else 0},
     }
-

@@ -9,6 +9,7 @@ from typing import Any
 
 from davinci_engine.analysis.ffmpeg_runtime import stream_summary, verify_render
 from davinci_engine.common import sha256_file
+from davinci_engine.creative.adapters import DIRECT_MEDIA_MECHANISMS, default_adapter_registry
 from davinci_engine.execution.journal import EngineJournal
 from davinci_engine.execution.plan import ResolveExecutionPlan
 from davinci_engine.execution.validator import validate
@@ -23,6 +24,7 @@ class EngineExecutor:
     def __init__(self, connection: ResolveConnection, journal: EngineJournal) -> None:
         self.connection = connection
         self.journal = journal
+        self.adapter_registry = default_adapter_registry()
 
     def preview(self, plan: ResolveExecutionPlan) -> dict[str, Any]:
         validation = validate(plan)
@@ -35,6 +37,7 @@ class EngineExecutor:
                 "timeline": plan.timeline_name,
                 "video_clips": len(plan.clips),
                 "audio_clips": sum(clip.include_audio for clip in plan.clips),
+                "creative_operations": len(plan.creative_operations),
                 "render_path": str(plan.render_file()),
             },
         }
@@ -59,15 +62,22 @@ class EngineExecutor:
         self.journal.create(operation_id, plan.digest, plan.to_dict())
         try:
             project = self._prepare_project(plan)
-            media_items = self._import_media(project, plan)
+            creative_media_paths = [
+                operation.path()
+                for operation in plan.creative_operations
+                if operation.mechanism in DIRECT_MEDIA_MECHANISMS
+            ]
+            media_items = self._import_media(project, plan, additional_paths=creative_media_paths)
             timeline, clips_already_placed = self._create_timeline(project, plan, media_items)
-            self._ensure_tracks(timeline, "video", max(clip.video_track for clip in plan.clips))
-            self._ensure_tracks(timeline, "audio", max(clip.audio_track for clip in plan.clips))
+            required_video_tracks, required_audio_tracks = self._required_track_counts(plan)
+            self._ensure_tracks(timeline, "video", required_video_tracks)
+            self._ensure_tracks(timeline, "audio", required_audio_tracks)
             media_pool = project.GetMediaPool()
             if not clips_already_placed:
                 for clip in plan.clips:
                     item = media_items[os.path.normcase(os.path.realpath(clip.path()))]
                     self._append_clip(media_pool, item, clip, plan, timeline)
+            creative_readback = self._apply_creative_operations(media_pool, timeline, plan, media_items)
             readback = self._readback(timeline)
             if readback["video_item_count"] < len(plan.clips):
                 raise ExecutionFailed("写后读回的视频片段数少于计划，已拒绝将操作标记为成功。")
@@ -77,6 +87,7 @@ class EngineExecutor:
                 "operation_id": operation_id,
                 "plan_digest": plan.digest,
                 "timeline": readback,
+                "creative_operations": creative_readback,
             }
             self.journal.update(operation_id, "succeeded", response)
             return response
@@ -431,9 +442,13 @@ class EngineExecutor:
         for child in folder.GetSubFolderList() or []:
             yield from EngineExecutor._walk_pool_items(child)
 
-    def _import_media(self, project: Any, plan: ResolveExecutionPlan) -> dict[str, Any]:
+    def _import_media(
+        self, project: Any, plan: ResolveExecutionPlan, *, additional_paths: list[Path] | None = None
+    ) -> dict[str, Any]:
         pool = project.GetMediaPool()
-        unique_paths = list(dict.fromkeys(str(clip.path()) for clip in plan.clips))
+        unique_paths = list(
+            dict.fromkeys([*(str(clip.path()) for clip in plan.clips), *(str(path) for path in additional_paths or [])])
+        )
         root_folder = pool.GetRootFolder()
         # 每个运行使用独立受管 Bin，避免依赖 UI 选中的位置，也避免时间线对象和媒体
         # 混在 Master 根目录。Folder 返回值异常时同样按名称读回，而不盲目重复创建。
@@ -523,7 +538,7 @@ class EngineExecutor:
 
     def _append_clip(
         self, media_pool: Any, media_item: Any, clip: Any, plan: ResolveExecutionPlan, timeline: Any
-    ) -> None:
+    ) -> Any:
         summary = stream_summary(clip.path())
         source_fps = float(summary.get("fps") or plan.timeline_fps)
         start_frame = max(0, int(round(clip.source_in_seconds * source_fps)))
@@ -539,7 +554,7 @@ class EngineExecutor:
             "recordFrame": int(timeline_start_frame) + clip.record_frame,
         }
         video_result = media_pool.AppendToTimeline([video_payload])
-        self._require_placed_item(
+        video_item = self._require_placed_item(
             timeline,
             "video",
             clip.video_track,
@@ -567,6 +582,7 @@ class EngineExecutor:
                 clip.asset_id,
                 audio_result,
             )
+        return video_item
 
     @staticmethod
     def _require_placed_item(
@@ -577,7 +593,7 @@ class EngineExecutor:
         expected_path: Path,
         asset_id: str,
         append_result: Any,
-    ) -> None:
+    ) -> Any:
         """写后按轨道、目标帧与媒体身份读回，API 返回值不能单独构成成功证据。"""
         expected = os.path.normcase(os.path.realpath(expected_path))
         deadline = time.monotonic() + 2.0
@@ -591,7 +607,7 @@ class EngineExecutor:
                 except BaseException:
                     continue
                 if starts_at_expected_frame and actual == expected:
-                    return
+                    return item
             if time.monotonic() >= deadline:
                 raise ExecutionFailed(
                     f"无法读回已放置的{kind}片段 {asset_id}；"
@@ -599,6 +615,107 @@ class EngineExecutor:
                     f"AppendToTimeline 返回={type(append_result).__name__}。"
                 )
             time.sleep(0.1)
+
+    @staticmethod
+    def _required_track_counts(plan: ResolveExecutionPlan) -> tuple[int, int]:
+        """创意直接媒体可以占用额外轨道，但不能降低源片段的既有轨道要求。"""
+
+        video_tracks = [clip.video_track for clip in plan.clips]
+        audio_tracks = [clip.audio_track for clip in plan.clips]
+        for operation in plan.creative_operations:
+            parameters = operation.parameters
+            if operation.mechanism in {"image_asset", "video_asset", "video_overlay"}:
+                video_tracks.append(int(parameters["video_track"]))
+            elif operation.mechanism == "audio_asset":
+                audio_tracks.append(int(parameters["audio_track"]))
+        return max(video_tracks), max(audio_tracks)
+
+    def _apply_creative_operations(
+        self,
+        media_pool: Any,
+        timeline: Any,
+        plan: ResolveExecutionPlan,
+        media_items: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """只执行已通过计划校验的具体机制；未知能力绝不在这里猜测执行方式。"""
+
+        readbacks: list[dict[str, Any]] = []
+        timeline_start = int(timeline.GetStartFrame())
+        for index, operation in enumerate(plan.creative_operations):
+            adapter = self.adapter_registry.get(operation.mechanism)
+            parameters = operation.parameters
+            if operation.mechanism in DIRECT_MEDIA_MECHANISMS:
+                path = operation.path()
+                summary = stream_summary(path)
+                source_fps = float(summary.get("fps") or plan.timeline_fps)
+                source_in = float(parameters.get("source_in_seconds", 0))
+                duration = float(parameters["duration_seconds"])
+                start_frame = max(0, int(round(source_in * source_fps)))
+                end_frame = max(start_frame + 1, int(round((source_in + duration) * source_fps)))
+                kind = "audio" if operation.mechanism == "audio_asset" else "video"
+                track = int(parameters["audio_track" if kind == "audio" else "video_track"])
+                record_frame = timeline_start + int(parameters["record_frame"])
+                item = media_items[os.path.normcase(os.path.realpath(path))]
+                applied = adapter.apply(
+                    {
+                        "media_pool": media_pool,
+                        "media_item": item,
+                        "operation": {
+                            "media_type": 2 if kind == "audio" else 1,
+                            "start_frame": start_frame,
+                            "end_frame": end_frame,
+                            "track_index": track,
+                            "record_frame": record_frame,
+                        },
+                    }
+                )
+                timeline_item = self._require_placed_item(
+                    timeline,
+                    kind,
+                    track,
+                    record_frame,
+                    path,
+                    operation.capability_id,
+                    applied["append_result_type"],
+                )
+                readbacks.append(
+                    {
+                        "index": index,
+                        "capability_id": operation.capability_id,
+                        "mechanism": operation.mechanism,
+                        "apply": applied,
+                        "readback": adapter.inspect({"timeline_item": timeline_item}),
+                    }
+                )
+                continue
+            if operation.mechanism == "lut_3d":
+                target_clip = plan.clips[int(parameters["target_clip_index"])]
+                target_item = self._require_placed_item(
+                    timeline,
+                    "video",
+                    target_clip.video_track,
+                    timeline_start + target_clip.record_frame,
+                    target_clip.path(),
+                    target_clip.asset_id,
+                    None,
+                )
+                applied = adapter.apply(
+                    {
+                        "timeline_item": target_item,
+                        "deployment": {"installed_relative_path": parameters["installed_relative_path"]},
+                    }
+                )
+                readbacks.append(
+                    {
+                        "index": index,
+                        "capability_id": operation.capability_id,
+                        "mechanism": operation.mechanism,
+                        "apply": applied,
+                        "readback": adapter.inspect({"timeline_item": target_item}),
+                    }
+                )
+                continue
+            raise ExecutionFailed(f"创意操作 {operation.capability_id} 缺少受支持的执行 Mapping。")
 
     @staticmethod
     def _readback(timeline: Any) -> dict[str, Any]:

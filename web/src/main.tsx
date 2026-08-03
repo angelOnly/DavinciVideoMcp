@@ -18,6 +18,13 @@ type Version = {
   state: string;
 };
 
+type VideoArtifact = {
+  id: string;
+  artifact_type: "technical_preview" | "work_preview" | "candidate_render";
+  state: string;
+  output_path: string;
+};
+
 type Project = {
   id: string;
   title: string;
@@ -25,6 +32,7 @@ type Project = {
   brief: Record<string, unknown>;
   assets?: Asset[];
   versions?: Version[];
+  artifacts?: VideoArtifact[];
 };
 
 type ApiError = { error?: { message?: string } };
@@ -93,7 +101,7 @@ function App() {
       setTitle("");
       setProjects((current) => [project, ...current]);
       setActiveId(project.id);
-      setMessage("项目已创建。请上传已在本机准备好的素材。");
+      setMessage("技术测试项目已创建。请上传已在本机准备好的素材。技术预览不会发布为成片候选。");
     } catch (error) {
       setMessage((error as Error).message);
     } finally {
@@ -131,9 +139,9 @@ function App() {
       await request(`/api/projects/${activeProject.id}/runs`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ asset_ids: assetIds }),
+        body: JSON.stringify({ asset_ids: assetIds, kind: "engine_smoke" }),
       });
-      setMessage("剪辑任务已持久化，后台 Worker 会领取并执行。页面会自动刷新状态。");
+      setMessage("Engine 冒烟任务已持久化。它只会生成内部技术预览，不会生成成片候选。页面会自动刷新状态。");
       await selectProject(activeProject.id);
     } catch (error) {
       setMessage((error as Error).message);
@@ -145,13 +153,15 @@ function App() {
   const readyToStart = Boolean(
     activeProject?.assets?.length && activeProject.assets.every((asset) => asset.state === "ready"),
   );
+  const technicalPreviews = (activeProject?.artifacts || []).filter((artifact) => artifact.artifact_type === "technical_preview");
+  const workPreviews = (activeProject?.artifacts || []).filter((artifact) => artifact.artifact_type === "work_preview");
 
   return (
     <main>
       <section className="hero">
-        <p className="eyebrow">LOCAL VIDEO EDITING WORKBENCH</p>
-        <h1>让真实素材先通过验证，再进入剪辑。</h1>
-        <p>本地项目、素材状态、任务与版本都保存在工作站；Resolve 只由后台 Worker 写入。</p>
+        <p className="eyebrow">DEVELOPMENT TEST WORKBENCH</p>
+        <h1>这里仅用于验证素材与 Resolve 技术链路。</h1>
+        <p>技术预览、内部工作版与成片候选严格分开；本页不能把任何测试渲染发布为成片候选。</p>
       </section>
 
       <section className="workspace">
@@ -163,7 +173,7 @@ function App() {
               <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：猫咪日常" />
             </label>
             <label>
-              测试预设
+              Engine 测试预设
               <select value={preset} onChange={(event) => setPreset(event.target.value as typeof preset)}>
                 <option value="fragment_montage">拍摄碎片拼接</option>
                 <option value="interview_excerpt">人物访谈开场节选</option>
@@ -218,12 +228,40 @@ function App() {
                   {activeProject.assets?.length === 0 && <p className="muted">尚未上传素材。</p>}
                 </div>
                 <button className="primary" disabled={!readyToStart || busy} onClick={() => void startRun()}>
-                  开始制作
+                  运行 Engine 冒烟测试
                 </button>
               </section>
 
               <section className="panel">
-                <div className="panel-heading"><div><h3>成片候选</h3><p>发布后的版本不会被后续剪辑覆盖。</p></div></div>
+                <div className="panel-heading"><div><h3>内部技术预览</h3><p>仅证明受管 Resolve 写入与渲染；没有转写、素材理解、选片、收尾或候选资格。</p></div></div>
+                <div className="versions">
+                  {technicalPreviews.map((artifact) => (
+                    <article key={artifact.id}>
+                      <h4>技术预览</h4>
+                      <p>{artifact.state}</p>
+                      <video controls preload="metadata" src={`/api/artifacts/${artifact.id}/media`} />
+                    </article>
+                  ))}
+                  {technicalPreviews.length === 0 && <p className="muted">当前还没有内部技术预览。</p>}
+                </div>
+              </section>
+
+              <section className="panel">
+                <div className="panel-heading"><div><h3>内部工作版</h3><p>只有完整专业链路生成并复核后才会出现；它仍不是用户可见的成片候选。</p></div></div>
+                <div className="versions">
+                  {workPreviews.map((artifact) => (
+                    <article key={artifact.id}>
+                      <h4>工作版</h4>
+                      <p>{artifact.state}</p>
+                      <video controls preload="metadata" src={`/api/artifacts/${artifact.id}/media`} />
+                    </article>
+                  ))}
+                  {workPreviews.length === 0 && <p className="muted">当前还没有经过专业链路复核的内部工作版。</p>}
+                </div>
+              </section>
+
+              <section className="panel">
+                <div className="panel-heading"><div><h3>成片候选</h3><p>仅展示通过完整专业前置、收尾和候选验证后发布的不可覆盖版本。</p></div></div>
                 <div className="versions">
                   {(activeProject.versions || []).map((version) => (
                     <article key={version.id}>

@@ -8,6 +8,7 @@ from typing import Any
 
 from davinci_engine.analysis import ffmpeg_runtime
 from davinci_engine.common import ensure_within_workspace
+from davinci_engine.creative.adapters import default_adapter_registry
 from davinci_engine.execution.executor import EngineExecutor
 from davinci_engine.execution.journal import EngineJournal
 from davinci_engine.execution.plan import ExecutionPlanError, ResolveExecutionPlan
@@ -21,6 +22,7 @@ class EngineService:
         self.journal.initialize()
         self.connection = ResolveConnection()
         self.executor = EngineExecutor(self.connection, self.journal)
+        self.adapter_registry = default_adapter_registry()
 
     def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -30,6 +32,8 @@ class EngineService:
                     "python_executable": sys.executable,
                     "ffmpeg": ffmpeg_runtime.status(),
                     "resolve": self.connection.execution_readiness(),
+                    # 仅表示代码存在相应机制 Adapter，不表示任一素材已经认证或部署。
+                    "supported_creative_adapter_mechanisms": self.adapter_registry.mechanisms(),
                     "installed_capabilities": [],
                 }
             if name == "analyze_media":
@@ -38,7 +42,11 @@ class EngineService:
             if name == "inspect_resolve":
                 return {"state": "succeeded", "resolve": self.connection.inspect()}
             if name == "list_installed_capabilities":
-                return {"state": "succeeded", "capabilities": []}
+                return {
+                    "state": "succeeded",
+                    "capabilities": [],
+                    "supported_adapter_mechanisms": self.adapter_registry.mechanisms(),
+                }
             if name == "validate_execution_plan":
                 plan = _plan(arguments)
                 result = validate(plan)

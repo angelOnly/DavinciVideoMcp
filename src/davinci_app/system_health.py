@@ -1,57 +1,58 @@
-"""系统能力健康检查；只启用实际通过检查的能力。"""
+"""系统能力健康检查；只把真实实测通过的能力暴露给工作流。"""
 
 from __future__ import annotations
 
-import importlib.util
-import os
-from pathlib import Path
+import sqlite3
+import time
 from typing import Any
 
+from davinci_app.adapters.codex_app_server import CodexAppServerSkillRuntime
+from davinci_app.adapters.funasr_transcriber import FunASRTranscriberAdapter
+from davinci_app.adapters.openai_multimodal import OpenAICompatibleMultimodalAdapter
 from davinci_app.config import AppConfig, runtime_report
 from davinci_app.media.probe import ffmpeg_health
 
 
-def check_system_health(config: AppConfig) -> dict[str, Any]:
-    funasr = _funasr_health(config.funasr_manifest)
-    multimodal = _multimodal_health(config)
-    return {
+_CACHE_SECONDS = 300.0
+_health_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def check_system_health(config: AppConfig, *, force: bool = False) -> dict[str, Any]:
+    """缓存短时间健康结果，避免 Web 轮询反复加载本地大模型或消耗云端探测配额。"""
+    cache_key = f"{config.repository_root}|{config.multimodal_base_url}|{config.multimodal_model}|{config.funasr_manifest}"
+    now = time.monotonic()
+    cached = _health_cache.get(cache_key)
+    if not force and cached and now - cached[0] < _CACHE_SECONDS:
+        return cached[1]
+    funasr = FunASRTranscriberAdapter(config).health_check()
+    multimodal = OpenAICompatibleMultimodalAdapter(config).health_check()
+    # health_check 不会触碰 project_service；传入 None 不会形成第二份业务状态。
+    codex = CodexAppServerSkillRuntime(config, project_service=None).health_check()
+    result = {
         "runtime": runtime_report(config),
         "ffmpeg": ffmpeg_health(),
         "funasr": funasr,
         "multimodal": multimodal,
-        "creative_roots": {
-            "raw_available": config.creative_raw_root.exists(),
-            "certified_available": config.creative_certified_root.exists(),
-            "cache_root": str(config.creative_cache_root),
-        },
+        "codex_app_server": codex,
+        "creative_catalog": _creative_catalog_health(config),
     }
+    _health_cache[cache_key] = (now, result)
+    return result
 
 
-def _funasr_health(manifest: Path) -> dict[str, Any]:
-    if not manifest.exists():
-        return {"available": False, "reason": "未找到 models/manifest.yaml；不会自动下载模型。"}
-    package_available = importlib.util.find_spec("funasr") is not None
-    # 只读取 manifest 路径，不载入模型，避免 API 进程占用模型与 GPU。
+def _creative_catalog_health(config: AppConfig) -> dict[str, Any]:
+    """目录存在不代表能力已认证；只报告实际认证条目数。"""
+    certified_count = 0
+    try:
+        with sqlite3.connect(config.creative_catalog_database) as connection:
+            row = connection.execute("SELECT COUNT(*) FROM capabilities WHERE state = 'certified'").fetchone()
+            certified_count = int(row[0]) if row else 0
+    except sqlite3.Error:
+        # 健康接口不能因目录索引尚未初始化而虚报任何可用能力。
+        certified_count = 0
     return {
-        "available": package_available,
-        "manifest": str(manifest),
-        "reason": None if package_available else "当前 Conda 环境未安装 FunASR；转写类任务会被阻止。",
+        "raw_root_exists": config.creative_raw_root.exists(),
+        "certified_root_exists": config.creative_certified_root.exists(),
+        "certified_count": certified_count,
+        "cache_root": str(config.creative_cache_root),
     }
-
-
-def _multimodal_health(config: AppConfig) -> dict[str, Any]:
-    has_key = bool(os.environ.get("MULTIMODAL_API_KEY"))
-    if not config.multimodal_base_url or not has_key:
-        return {
-            "available": False,
-            "model": config.multimodal_model,
-            "reason": "未配置本机多模态端点或密钥；系统不会按模型名称虚报能力。",
-            "capabilities": {},
-        }
-    return {
-        "available": False,
-        "model": config.multimodal_model,
-        "reason": "端点已配置，但尚未完成文本、图片、音频、视频和结构化输出实测。",
-        "capabilities": {},
-    }
-

@@ -5,6 +5,7 @@ __pycache__/
 .pytest_cache/
 *.pyc
 workspace/
+workspace.zip
 /videos/
 *.db
 *.db-wal

@@ -94,6 +94,10 @@ class TaskQueue:
     def fail(self, task_id: str, worker_id: str, error: dict[str, Any], *, outcome_unknown: bool = False) -> None:
         self._finish(task_id, worker_id, "outcome_unknown" if outcome_unknown else "failed", error)
 
+    def wait(self, task_id: str, worker_id: str, reason: dict[str, Any]) -> None:
+        """等待外部专业能力或用户补充，不能把缺失前置条件当作成功。"""
+        self._finish(task_id, worker_id, "waiting_user", reason)
+
     def record_step(self, task_id: str, step_name: str, status: str, detail: dict[str, Any] | None = None) -> None:
         now = utc_now()
         with self.database.transaction(immediate=True) as connection:
@@ -108,7 +112,7 @@ class TaskQueue:
                     status,
                     json.dumps(detail or {}, ensure_ascii=False),
                     now,
-                    now if status in {"succeeded", "failed", "outcome_unknown"} else None,
+                    now if status in {"succeeded", "failed", "outcome_unknown", "waiting_user"} else None,
                 ),
             )
 

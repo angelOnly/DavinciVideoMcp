@@ -355,7 +355,7 @@ Skills 不互相启动。唯一调用者是工作流编排器。
 - 持久 Codex 委托线程；
 - 本地 FunASR 中文转写；
 - 镜头检测、抽帧和确定性音频分析；
-- 通过 OpenAI-compatible Adapter 调用配置模型 `gemini-3.5-flash`，并在启动时探测其图片、音频、视频和结构化输出能力；
+- 通过 OpenAI-compatible Adapter 调用配置模型 `gemini-3-flash`，并在启动时探测其图片、音频、视频和结构化输出能力；
 - 六个专业 Skills；
 - Nextcloud 原始采购库、认证素材库、SQLite 素材目录、全文检索和本地受管缓存；
 - 可替换的语义索引接口；是否启用向量召回由认证素材规模和真实检索效果决定；
